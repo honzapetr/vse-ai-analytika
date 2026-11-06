@@ -1,0 +1,123 @@
+# =====================================================================
+#  Síť 36 kávomatů v Praze – denní provozní data 10/2025–09/2026
+#  Zadání: docs/zadani_kavomaty.md
+# =====================================================================
+dataset: kavomaty
+nazev: Kávomaty Praha – roční provoz
+
+zdroj:
+  soubor: data/raw/praha_kavomaty.xlsx
+  list: praha_kavomaty_Clean
+
+sloupce_povinne:
+  - date
+  - machine_id
+  - prague_district
+  - location_type
+  - is_weekend
+  - cups_sold
+  - revenue_czk
+  - ingredient_cost_czk
+  - gross_profit_czk
+  - downtime_occured
+  - downtime_minutes
+  - stockout_occurred
+
+dimenze:
+  machine_id: Automat (PRG-001 … PRG-036)
+  prague_district: Městská část
+  location_type: Typ lokality (Office, Hospital, University, …)
+  location_description: Konkrétní umístění
+  month_number: Měsíc (1–12)
+  day_of_week: Den v týdnu
+  is_weekend: Víkend (1) / pracovní den (0)
+
+cisteni:
+  - id: prazdne_radky
+    popis: Zcela prázdné řádky
+    akce: odstranit_prazdne
+
+  - id: duplicity
+    popis: Duplicitní záznam stejného automatu ve stejný den
+    akce: odstranit_duplicity
+    klic: [date, machine_id]
+
+  - id: nesedi_naklady
+    popis: >
+      Řádky, kde neplatí tržba − náklady = hrubý zisk
+      (náklady na suroviny vyšší než tržba – pravděpodobně chyba zápisu nákladů).
+    akce: nekonzistence
+    podminka: "abs(revenue_czk - ingredient_cost_czk - gross_profit_czk) > 0.01"
+    moznosti:
+      prepocitat: Náklady dopočítat jako tržba − hrubý zisk (věříme tržbě a zisku)
+      ponechat: Ponechat beze změny (zisk a náklady pak nebudou sedět)
+      vyradit: Řádky vyřadit (ztratíme dva dny provozu dvou automatů)
+    prepocet:
+      sloupec: ingredient_cost_czk
+      vzorec: revenue_czk - gross_profit_czk
+
+  - id: platby
+    popis: Podíly plateb (karta + mobil + hotovost) musí dát 100 %
+    akce: jen_nahlasit
+    podminka: "abs(card_payment_share + mobile_payment_share + cash_payment_share - 1) > 0.01"
+
+agregace:
+  dny:            {sloupec: date,                funkce: count}
+  kelimky:        {sloupec: cups_sold,           funkce: sum}
+  trzba_czk:      {sloupec: revenue_czk,         funkce: sum}
+  naklady_czk:    {sloupec: ingredient_cost_czk, funkce: sum}
+  gp_czk:         {sloupec: gross_profit_czk,    funkce: sum}
+  dny_porucha:    {sloupec: downtime_occured,    funkce: sum}
+  minuty_porucha: {sloupec: downtime_minutes,    funkce: sum}
+  dny_bez_suroviny: {sloupec: stockout_occurred, funkce: sum}
+  automaty:       {sloupec: machine_id,          funkce: nunique}
+
+metriky:
+  trzba_tis_czk:
+    nazev: Tržba
+    vzorec: trzba_czk / 1000
+    jednotka: tis. CZK
+  gp_tis_czk:
+    nazev: Hrubý zisk
+    vzorec: gp_czk / 1000
+    jednotka: tis. CZK
+  marze_pct:
+    nazev: Hrubá marže
+    vzorec: gp_czk / trzba_czk * 100
+    jednotka: "%"
+    rozsah: [0, 100]
+  cena_za_kelimek:
+    nazev: Průměrná cena za kelímek
+    vzorec: trzba_czk / kelimky
+    jednotka: CZK
+    rozsah: [10, 150]
+    pozor: Vždy tržba / kelímky ze součtů, nikdy průměr sloupce average_price_per_cup_czk.
+  kelimky_na_automat_den:
+    nazev: Kelímky na automat a den
+    vzorec: kelimky / dny
+    jednotka: ks
+  gp_na_automat_den:
+    nazev: Hrubý zisk na automat a den
+    vzorec: gp_czk / dny
+    jednotka: CZK
+  podil_dnu_s_poruchou_pct:
+    nazev: Podíl dnů s poruchou
+    vzorec: dny_porucha / dny * 100
+    jednotka: "%"
+    rozsah: [0, 100]
+  hodiny_poruch:
+    nazev: Hodiny výpadků celkem
+    vzorec: minuty_porucha / 60
+    jednotka: h
+  podil_dnu_bez_suroviny_pct:
+    nazev: Podíl dnů s chybějící surovinou
+    vzorec: dny_bez_suroviny / dny * 100
+    jednotka: "%"
+    rozsah: [0, 100]
+
+analyzy:
+  ztraty_vypadky: >
+    Odhad ušlé tržby a hrubého zisku kvůli poruchám a chybějícím surovinám
+    (srovnání s běžným dnem stejného automatu, pracovní den vs. víkend zvlášť).
+
+kontrolni_hodnoty: []

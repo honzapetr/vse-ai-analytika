@@ -1,0 +1,145 @@
+# =====================================================================
+#  KPE – prodeje mléčných výrobků 2021 (skutečnost vs. plán)
+#  Jediný zdroj pravdy pro výpočty. Metriku měníš TADY, ne v kódu.
+# =====================================================================
+dataset: kpe
+nazev: KPE prodeje 2021 – skutečnost vs. plán
+
+zdroj:
+  soubor: data/raw/kpe_sales_2021.xlsx
+  list: data
+
+# Sloupce, bez kterých pipeline nepoběží
+sloupce_povinne:
+  - SalesChannelISOP
+  - Brand
+  - Subbrand
+  - KeyAccount
+  - Year
+  - YearMonth
+  - PackSize
+  - "Volume, t"
+  - "Plan, t"
+  - "Quantity, pcs."
+  - "Plan, pcs."
+  - "GP, CZK"
+  - "Plan GP, CZK"
+
+# Popisky dimenzí pro studenty (podle čeho se dá členit)
+dimenze:
+  SalesChannelISOP: Prodejní kanál (AFH, Dist, LKA, NKA, TT, WH-OT)
+  Brand: Značka
+  Subbrand: Subznačka
+  KeyAccount: Odběratel
+  YearMonth: Měsíc (RRRRMM)
+  PackSize_kg: Velikost balení v kg
+
+# ---------------------------------------------------------------------
+#  ČIŠTĚNÍ – kroky se provádějí v tomto pořadí
+#  moznosti = student musí rozhodnout (pipeline se zastaví a zeptá se)
+# ---------------------------------------------------------------------
+cisteni:
+  - id: prazdne_radky
+    popis: Zcela prázdné řádky
+    akce: odstranit_prazdne
+
+  - id: souhrnne_radky
+    popis: >
+      Řádky bez kanálu, značky i roku, ale s čísly = souhrnný (TOTAL) řádek
+      nebo poznámka pod tabulkou. Kdyby zůstaly, všechny součty by byly dvojnásobné.
+    akce: odstranit_kde
+    podminka: SalesChannelISOP.isna() and Brand.isna() and Year.isna()
+
+  - id: chybejici_odberatel
+    popis: Řádky bez vyplněného odběratele (KeyAccount)
+    akce: chybejici_hodnota
+    sloupec: KeyAccount
+    moznosti:
+      oznacit: Ponechat a doplnit hodnotu „Neuvedeno“ (objem i zisk zůstanou v součtech)
+      vyradit: Řádky vyřadit (sníží celkový objem i zisk)
+
+  - id: velikost_baleni
+    popis: Převod textu „0.036 Kg“ na číslo 0.036 (nový sloupec PackSize_kg)
+    akce: text_na_cislo
+    sloupec: PackSize
+    novy_sloupec: PackSize_kg
+
+  - id: zaporny_zisk
+    popis: >
+      Řádky se záporným hrubým ziskem nebo objemem. Typicky ztrátové promo
+      akce nebo dobropisy – jsou to reálné obchody, proto se jen hlásí.
+    akce: jen_nahlasit
+    podminka: "`GP, CZK` < 0 or `Volume, t` < 0"
+
+# ---------------------------------------------------------------------
+#  AGREGACE – jak se surové sloupce sčítají při seskupení
+# ---------------------------------------------------------------------
+agregace:
+  objem_t:      {sloupec: "Volume, t",      funkce: sum}
+  plan_t:       {sloupec: "Plan, t",        funkce: sum}
+  kusy:         {sloupec: "Quantity, pcs.", funkce: sum}
+  plan_kusy:    {sloupec: "Plan, pcs.",     funkce: sum}
+  gp_czk:       {sloupec: "GP, CZK",        funkce: sum}
+  plan_gp_czk:  {sloupec: "Plan GP, CZK",   funkce: sum}
+
+# ---------------------------------------------------------------------
+#  METRIKY – vzorce nad agregacemi (počítají se VŽDY ze součtů)
+# ---------------------------------------------------------------------
+metriky:
+  objem_t:
+    nazev: Objem
+    vzorec: objem_t
+    jednotka: t
+  objem_vs_plan_pct:
+    nazev: Objem vs. plán
+    vzorec: (objem_t / plan_t - 1) * 100
+    jednotka: "%"
+  kusy_vs_plan_pct:
+    nazev: Prodané kusy vs. plán
+    vzorec: (kusy / plan_kusy - 1) * 100
+    jednotka: "%"
+  gp_mil_czk:
+    nazev: Hrubý zisk
+    vzorec: gp_czk / 1e6
+    jednotka: mil. CZK
+  gp_vs_plan_pct:
+    nazev: Hrubý zisk vs. plán
+    vzorec: (gp_czk / plan_gp_czk - 1) * 100
+    jednotka: "%"
+  gp_na_kg:
+    nazev: Hrubý zisk na kg
+    vzorec: gp_czk / (objem_t * 1000)
+    jednotka: CZK/kg
+    rozsah: [-50, 100]
+    pozor: Nikdy nepočítat jako průměr GP/kg po řádcích – vždy podíl součtů.
+  plan_gp_na_kg:
+    nazev: Plánovaný hrubý zisk na kg
+    vzorec: plan_gp_czk / (plan_t * 1000)
+    jednotka: CZK/kg
+  prumerne_baleni_g:
+    nazev: Průměrná velikost balení
+    vzorec: objem_t * 1e6 / kusy
+    jednotka: g
+    rozsah: [0, 2000]
+
+# ---------------------------------------------------------------------
+#  ANALÝZY – hotové postupy v scripts/analyzy.py
+# ---------------------------------------------------------------------
+analyzy:
+  most_gp: >
+    Most hrubého zisku plán → skutečnost: efekt objemu (Δ objem × plánovaný GP/kg celkem),
+    efekt kanálového mixu a efekt marže (zbytek).
+
+# ---------------------------------------------------------------------
+#  KONTROLNÍ HODNOTY – ověřené čísla (vzorový slide 2021).
+#  Validace selže, pokud výsledek nesedí. Chrání před chybným čištěním.
+#  plati_pro = hodnoty platí jen při těchto rozhodnutích v čištění.
+# ---------------------------------------------------------------------
+kontrolni_hodnoty_plati_pro:
+  chybejici_odberatel: oznacit
+kontrolni_hodnoty:
+  - {metrika: objem_t,          hodnota: 15529, tolerance: 1}
+  - {metrika: objem_vs_plan_pct, hodnota: 3.8,  tolerance: 0.05}
+  - {metrika: gp_mil_czk,       hodnota: 147.3, tolerance: 0.05}
+  - {metrika: gp_vs_plan_pct,   hodnota: 0.5,   tolerance: 0.05}
+  - {metrika: gp_na_kg,         hodnota: 9.49,  tolerance: 0.005}
